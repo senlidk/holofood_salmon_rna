@@ -1,0 +1,170 @@
+#!/bin/bash
+#############################################
+## Version 0.2.1                           ##
+## Written by Sen Li, sen.li_at_sund.ku.dk ##
+#############################################
+
+### Set PBS options ###
+AccInfo="-A ku-cbd -W group_list=ku-cbd"
+SysRes="nodes=1:ppn=40,mem=180gb,walltime=0:48:00:00"
+JobName="star"
+EmailNotf="-m abe -M sen.li@bric.ku.dk" ## replace your email address here
+
+### Set snakemake options ###
+NumJobsNode=6
+WorkDir=`pwd -P`
+CodeDir=`echo ${WorkDir}/holofood_pipelines`
+#SnakeMakeFile=`echo ${WorkDir}/holofood_snakemake_bwa`
+ConfigFile=`echo ${WorkDir}/config_star.yaml`
+RawDataDir=`echo ${WorkDir}/00_RawData`
+DesDir1=`echo ${WorkDir}/02_StarMap1st`
+DesDir2=`echo ${WorkDir}/03_StarMap2nd`
+DesDir3=`echo ${WorkDir}/04_DegNormRun`
+JobID='${PBS_JOBID}'
+if [ ! -d ${CodeDir} ]; then
+	echo "HoloFood pipelines are not found, please check if 'CodeDir' is defined above\!"
+	echo "No job submits to PBS queue."
+
+fi
+if [ ! -d ${RawDataDir} ]; then
+        echo "00_RawData directory is not found in current working directory!"
+        echo "No job submits to PBS queue."
+        exit 0
+fi
+
+### Set parameters for the pipeline
+Adapter1="AAGTCGGAGGCCAAGCGGTCTTAGGAAGACAA"
+Adapter2="GAACGACATGGCTACGATCCGACTT"
+MaxNs=5
+MinQuality=30
+MinLength=100
+RefG="/home/projects/ku-cbd/data/HoloFood/Salmon_REF_Genome/STAR_REF_272b"
+RefGTF="/home/projects/ku-cbd/data/HoloFish/Salmon_REF_Genome/salmon_ref_2nd.gtf"
+starmins=0.5
+starminn=0.5
+if [ ! -d ${RefG} ]; then
+        echo "Reference Genome is not found!"
+        echo "No job submits to PBS queue."
+        exit 0
+fi
+echo "adapter1: $Adapter1" > $ConfigFile
+echo "adapter2: $Adapter2" >> $ConfigFile
+echo "maxns: $MaxNs" >> $ConfigFile
+echo "minquality: $MinQuality" >> $ConfigFile
+echo "minlength: $MinLength" >> $ConfigFile
+#echo "refgenomehost: $RefG" >> $ConfigFile
+echo "StarRef: $RefG" >> $ConfigFile
+echo "StarMinS: $starmins" >> $ConfigFile
+echo "StarMinN: $starminn" >> $ConfigFile
+###
+NumSamples=`ls -1 -d ${RawDataDir}/*_1.fq.gz | grep -vc "^\s*$"`
+if [ $NumSamples == 0 ]; then
+	echo "No FQ file found in 00_RawData directory!"
+	echo "No job submits to PBS queue."
+	exit 0
+fi
+NumNodes=`echo "(${NumSamples}-1)/${NumJobsNode}+1" | bc`
+
+### Submit snakemake jobs to PBS queue
+module purge
+module load shared tools
+module load anaconda3/4.4.0
+for ((njob=1;njob<=${NumNodes};njob++))
+do
+  StartLine=`echo "(${njob}-1)*${NumJobsNode}+1" | bc`
+  EndLine=`echo "${njob}*${NumJobsNode}" | bc`
+  OutFiles1=`ls -1 -d ${RawDataDir}/*_1.fq.gz | rev | cut -d '_' -f 2- | cut -d '/' -f 1 | rev | sed -n ${StartLine},${EndLine}p | sed "s|^|${DesDir1}\/|g" | sed 's|$|\.done|g' | paste -s -d " " -`
+  SJtabs=`ls -1 -d ${RawDataDir}/*_1.fq.gz | rev | cut -d '_' -f 2- | cut -d '/' -f 1 | rev | sed -n ${StartLine},${EndLine}p | sed "s|^|${DesDir1}\/|g" | sed 's|$|_SJ\.out\.tab|g' | paste -s -d " " -`
+  DelFiles=`ls -1 -d ${RawDataDir}/*_1.fq.gz | rev | cut -d '_' -f 2- | cut -d '/' -f 1 | rev | sed -n ${StartLine},${EndLine}p | sed "s|^|${DesDir1}\/|g" | sed 's|$|_\*|g' | paste -s -d " " -`
+  OutFiles2=`ls -1 -d ${RawDataDir}/*_1.fq.gz | rev | cut -d '_' -f 2- | cut -d '/' -f 1 | rev | sed -n ${StartLine},${EndLine}p | sed "s|^|${DesDir2}\/|g" | sed 's|$|\.done|g' | paste -s -d " " -`
+  qsub << EOF
+    #!/bin/bash
+    #PBS -V 
+    #PBS ${AccInfo} 
+    #PBS -d `pwd -P` 
+    #PBS -l ${SysRes} 
+    #PBS ${EmailNotf} 
+    #PBS -N ${JobName}_${njob}
+    pwd -P
+    snakemake -s ${CodeDir}/rm_adpt.smk --configfile ${ConfigFile} --cores $(echo ${SysRes} | cut -d ',' -f 1 | cut -d '=' -f 3) -r -p ${OutFiles1}
+    cat ${SJtabs} > ${DesDir1}/${JobID}.out.tab
+    cp ${ConfigFile} config_${JobID}.yaml
+    echo "sjtab: ${DesDir1}/${JobID}.out.tab" >> config_${JobID}.yaml
+    rm -rf ${DelFiles}
+    snakemake -s ${CodeDir}/stars.smk --configfile config_${JobID}.yaml --cores $(echo ${SysRes} | cut -d ',' -f 1 | cut -d '=' -f 3) -r -p ${OutFiles2}
+    echo "${JobID}" >> JobID_List_Star
+
+EOF
+done
+
+### Job for preparing DegNorm run, depends on Star Jobs
+sleep 3
+DepJobIDStar=`qstat | grep ${JobName} | grep -v 'C' | cut -d '.' -f 1 | paste -s -d ':' -`
+#echo $DepJobIDStar
+SysRes="nodes=1:ppn=40,mem=180gb,walltime=2:00:00"
+JobName="predeg"
+SumLogFile="${WorkDir}/summary_log.csv"
+MapRateFile="${WorkDir}/mapping_rate_sortted"
+qsub << EOF
+#!/bin/bash
+#PBS -V 
+#PBS ${AccInfo} 
+#PBS -d `pwd -P` 
+#PBS -l ${SysRes} 
+#PBS ${EmailNotf} 
+#PBS -N ${JobName}
+#PBS -W depend=afterok:${DepJobIDStar}
+mkdir -p ${WorkDir}/unmapped_fqs
+mv ${DesDir2}/*_unmapped_*.fq.gz ${WorkDir}/unmapped_fqs
+ls -1 ${DesDir2}/*_Log.final.out | rev | cut -d '/' -f 1 | cut -d '_' -f 2- | rev | paste -s -d ';' | sed 's/^/SampleID;/g' > ${SumLogFile}
+paste -d ';' \$(ls -1 ${DesDir2}/*_Log.final.out | paste -s -d ' ') | grep '|' | sed 's/|/;/g' | sed 's/ ;\t/;/g' | sed 's/; \+/;/g' | sed 's/^ \+//g' | cut -d ';' -f \$(seq 2 2 \$(echo \$(ls -1 ${DesDir2}/*_Log.final.out | wc -l)*2 | bc) | paste -sd, | sed 's/^/1,/g') >> ${SumLogFile}
+head -n 1 ${SumLogFile} | cut -d ';' -f 2- | sed 's/;/\n/g' > snames
+grep 'Uniquely mapped reads %' ${SumLogFile} | cut -d ';' -f 2- | sed 's/%//g' | sed 's/;/\n/g' > maprates
+paste -d ';' maprates snames | sort -g > ${MapRateFile}
+rm snames maprates
+NumSamples=\`grep -cv '^$' ${MapRateFile}\`
+NumDegSamp='4'
+NumDegJob=\`echo "(\${NumSamples}-1)/\${NumDegSamp}+1" | bc\`
+for ((ndeg=1;ndeg<=\${NumDegJob};ndeg++))
+do
+        mkdir -p ${DesDir3}/DegNorm_Group_\${ndeg}/bams
+        degbams=\`sed -n \$(seq \${ndeg} \${NumDegJob} \${NumSamples} | sed 's/$/p/g' | sed 's/^/\-e/g' | paste -s -d ' ' -) ${MapRateFile} | cut -d ';' -f 2 | sed 's/$/_Aligned.sortedByCoord.out.bam/g' | sed "s|^|${DesDir2}/|g" | paste -s -d ' ' -\`
+        mv \${degbams} ${DesDir3}/DegNorm_Group_\${ndeg}/bams
+done
+echo "${JobID}" >> JobID_List_DegNorm
+#ls -1 -d ${DesDir2}/* | grep -v '.done' | xargs rm -rf
+EOF
+
+### Submit DegNorm runs, depends on 'predeg'
+sleep 3
+DepJobIDDeg=`qstat | grep ${JobName} | grep -v 'C' | cut -d '.' -f 1 | paste -s -d ':' -`
+SysRes="nodes=2:ppn=40,mem=350gb,walltime=24:00:00"
+nNodes=`echo ${SysRes} | cut -d ':' -f 1 | cut -d '=' -f 2`
+nThreads='20'
+JobName="degnorm"
+NumDegJob=`ls -1 -d ${DesDir3}/*/ | wc -l | sed 's/^[ \t]*//'`
+for ((njob=1;njob<=${NumDegJob};njob++))
+do
+	DegDir=`echo "${DesDir3}/DegNorm_Group_${njob}"`
+	qsub << EOF
+#!/bin/bash
+#PBS -V 
+#PBS ${AccInfo} 
+#PBS -d `pwd -P` 
+#PBS -l ${SysRes} 
+#PBS ${EmailNotf} 
+#PBS -N ${JobName}_${njob}
+#PBS -W depend=afterok:${DepJobIDDeg}
+module purge
+module load shared tools
+module load mpich/3.3.2 samtools/1.11 parallel/20200922
+mkdir -p ${DegDir}/degnorm_out
+parallel samtools index ::: ${DegDir}/bams/*.bam
+which conda
+CONROOT=\`which conda | rev | cut -d '/' -f 3- | rev\`
+source \${CONROOT}/etc/profile.d/conda.sh
+conda env list
+conda activate degnorm
+mpiexec -n ${nNodes} degnorm_mpi --bam-dir ${DegDir}/bams -g ${RefGTF} -o ${DegDir}/degnorm_out -p ${nThreads} --nmf-iter 50 -d 20 --minimax-coverage 20 --skip-baseline-selection
+EOF
+done
