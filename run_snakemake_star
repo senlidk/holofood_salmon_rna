@@ -233,13 +233,14 @@ if [ -d ${DesDir3} ]; then
 module purge
 module load shared tools
 module load mpich/3.3.2 samtools/1.11 parallel/20200922
+module load degnorm/0.1.4
 mkdir -p ${DegDir}/degnorm_out
 parallel samtools index ::: ${DegDir}/bams/*.bam
-which conda
-CONROOT=\`which conda | rev | cut -d '/' -f 3- | rev\`
-source \${CONROOT}/etc/profile.d/conda.sh
-conda env list
-conda activate degnorm
+#which conda
+#CONROOT=\`which conda | rev | cut -d '/' -f 3- | rev\`
+#source \${CONROOT}/etc/profile.d/conda.sh
+#conda env list
+#conda activate degnorm
 mpiexec -n ${nNodes} degnorm_mpi --bam-dir ${DegDir}/bams -g ${RefGTF} -o ${DegDir}/degnorm_out -p ${nThreads} --nmf-iter 50 -d 20 --minimax-coverage 20 --skip-baseline-selection
 rm $lines
 touch ${DegDir}/DegNorm_Group_${GrpNum}.done
@@ -267,13 +268,14 @@ else
 module purge
 module load shared tools
 module load mpich/3.3.2 samtools/1.11 parallel/20200922
+module load degnorm/0.1.4
 mkdir -p ${DegDir}/degnorm_out
 parallel samtools index ::: ${DegDir}/bams/*.bam
-which conda
-CONROOT=\`which conda | rev | cut -d '/' -f 3- | rev\`
-source \${CONROOT}/etc/profile.d/conda.sh
-conda env list
-conda activate degnorm
+#which conda
+#CONROOT=\`which conda | rev | cut -d '/' -f 3- | rev\`
+#source \${CONROOT}/etc/profile.d/conda.sh
+#conda env list
+#conda activate degnorm
 mpiexec -n ${nNodes} degnorm_mpi --bam-dir ${DegDir}/bams -g ${RefGTF} -o ${DegDir}/degnorm_out -p ${nThreads} --nmf-iter 50 -d 20 --minimax-coverage 20 --skip-baseline-selection
 rm ${DegDir}/DegNorm_Group_*.ready2run
 touch ${DegDir}/DegNorm_Group_${ndeg}.done
