@@ -1,26 +1,50 @@
 #!/bin/bash
 #############################################
-## Version 0.2.1                           ##
+## Version 0.3.0                           ##
 ## Written by Sen Li, sen.li_at_sund.ku.dk ##
 #############################################
 
 ### Set PBS options ###
 AccInfo="-A ku-cbd -W group_list=ku-cbd"
-SysRes="nodes=1:ppn=40,mem=180gb,walltime=0:48:00:00"
-JobName="star"
 EmailNotf="-m abe -M sen.li@bric.ku.dk" ## replace your email address here
 
-### Set snakemake options ###
-NumJobsNode=6
+SysResAdpt="nodes=1:ppn=40,mem=180gb,walltime=4:00:00" ## SysRes for adapterremoval and star
+JobNameAdpt="star_test" ## job name for adapterremoval and star_1st, no more than 10 chars
+SysResPrd="nodes=1:ppn=40,mem=180gb,walltime=1:00:00"   ## SysRes for preparing degnorm run
+JobNamePrd="predeg"     ## job name for preparing degnorm run, no more than 10 chars
+SysResDeg="nodes=1:ppn=40,mem=180gb,walltime=1:00:00"       ## SysRes for degnorm, 5-10 nodes, mem=(num_nodes * 180gb), walltime > 240hrs
+JobNameDeg="degnorm"    ## job name for degnorm
+###
+
+### Set env vairables ###
 WorkDir=`pwd -P`
 CodeDir=`echo ${WorkDir}/holofood_pipelines`
-#SnakeMakeFile=`echo ${WorkDir}/holofood_snakemake_bwa`
 ConfigFile=`echo ${WorkDir}/config_star.yaml`
 RawDataDir=`echo ${WorkDir}/00_RawData`
+NumSamples=`ls -1 -d ${RawDataDir}/*_1.fq.gz | grep -vc "^\s*$"`
+JobID='${PBS_JOBID}'
+
+NumJobsNode=8   ## num of samples per node for star run
 DesDir1=`echo ${WorkDir}/02_StarMap1st`
 DesDir2=`echo ${WorkDir}/03_StarMap2nd`
+
+NumDegSamp=8    ## num of samples per degnorm group
 DesDir3=`echo ${WorkDir}/04_DegNormRun`
-JobID='${PBS_JOBID}'
+###
+
+### Set parameters for snakemake config yaml file
+Adapter1="AGATCGGAAGAGCACACGTCTGAACTCCAGTCA"
+Adapter2="AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT"
+MaxNs=5
+MinQuality=0
+MinLength=100
+RefG="/home/projects/ku-cbd/data/HoloFood/Salmon_REF_Genome/STAR_REF_272b"
+RefGTF="/home/projects/ku-cbd/data/HoloFish/Salmon_REF_Genome/salmon_ref_2nd.gtf"
+starmins=0.5
+starminn=0.5
+###
+
+### check if all necessary files are correctly set
 if [ ! -d ${CodeDir} ]; then
 	echo "HoloFood pipelines are not found, please check if 'CodeDir' is defined above\!"
 	echo "No job submits to PBS queue."
@@ -31,91 +55,134 @@ if [ ! -d ${RawDataDir} ]; then
         echo "No job submits to PBS queue."
         exit 0
 fi
-
-### Set parameters for the pipeline
-Adapter1="AAGTCGGAGGCCAAGCGGTCTTAGGAAGACAA"
-Adapter2="GAACGACATGGCTACGATCCGACTT"
-MaxNs=5
-MinQuality=30
-MinLength=100
-RefG="/home/projects/ku-cbd/data/HoloFood/Salmon_REF_Genome/STAR_REF_272b"
-RefGTF="/home/projects/ku-cbd/data/HoloFish/Salmon_REF_Genome/salmon_ref_2nd.gtf"
-starmins=0.5
-starminn=0.5
 if [ ! -d ${RefG} ]; then
         echo "Reference Genome is not found!"
         echo "No job submits to PBS queue."
         exit 0
 fi
-echo "adapter1: $Adapter1" > $ConfigFile
-echo "adapter2: $Adapter2" >> $ConfigFile
-echo "maxns: $MaxNs" >> $ConfigFile
-echo "minquality: $MinQuality" >> $ConfigFile
-echo "minlength: $MinLength" >> $ConfigFile
-#echo "refgenomehost: $RefG" >> $ConfigFile
-echo "StarRef: $RefG" >> $ConfigFile
-echo "StarMinS: $starmins" >> $ConfigFile
-echo "StarMinN: $starminn" >> $ConfigFile
-###
-NumSamples=`ls -1 -d ${RawDataDir}/*_1.fq.gz | grep -vc "^\s*$"`
 if [ $NumSamples == 0 ]; then
 	echo "No FQ file found in 00_RawData directory!"
 	echo "No job submits to PBS queue."
 	exit 0
 fi
-NumNodes=`echo "(${NumSamples}-1)/${NumJobsNode}+1" | bc`
+###
 
-### Submit snakemake jobs to PBS queue
+### write parameters to config file
+echo "adapter1: $Adapter1" > $ConfigFile
+echo "adapter2: $Adapter2" >> $ConfigFile
+echo "maxns: $MaxNs" >> $ConfigFile
+echo "minquality: $MinQuality" >> $ConfigFile
+echo "minlength: $MinLength" >> $ConfigFile
+echo "StarRef: $RefG" >> $ConfigFile
+echo "StarMinS: $starmins" >> $ConfigFile
+echo "StarMinN: $starminn" >> $ConfigFile
+###
+
+### Submit star jobs to PBS queue
 module purge
 module load shared tools
 module load anaconda3/4.4.0
+NumNodes=`echo "(${NumSamples}-1)/${NumJobsNode}+1" | bc` ## total num of nodes for star jobs
 for ((njob=1;njob<=${NumNodes};njob++))
 do
-  StartLine=`echo "(${njob}-1)*${NumJobsNode}+1" | bc`
-  EndLine=`echo "${njob}*${NumJobsNode}" | bc`
-  OutFiles1=`ls -1 -d ${RawDataDir}/*_1.fq.gz | rev | cut -d '_' -f 2- | cut -d '/' -f 1 | rev | sed -n ${StartLine},${EndLine}p | sed "s|^|${DesDir1}\/|g" | sed 's|$|\.done|g' | paste -s -d " " -`
-  SJtabs=`ls -1 -d ${RawDataDir}/*_1.fq.gz | rev | cut -d '_' -f 2- | cut -d '/' -f 1 | rev | sed -n ${StartLine},${EndLine}p | sed "s|^|${DesDir1}\/|g" | sed 's|$|_SJ\.out\.tab|g' | paste -s -d " " -`
-  DelFiles=`ls -1 -d ${RawDataDir}/*_1.fq.gz | rev | cut -d '_' -f 2- | cut -d '/' -f 1 | rev | sed -n ${StartLine},${EndLine}p | sed "s|^|${DesDir1}\/|g" | sed 's|$|_\*|g' | paste -s -d " " -`
-  OutFiles2=`ls -1 -d ${RawDataDir}/*_1.fq.gz | rev | cut -d '_' -f 2- | cut -d '/' -f 1 | rev | sed -n ${StartLine},${EndLine}p | sed "s|^|${DesDir2}\/|g" | sed 's|$|\.done|g' | paste -s -d " " -`
-  qsub << EOF
-    #!/bin/bash
-    #PBS -V 
-    #PBS ${AccInfo} 
-    #PBS -d `pwd -P` 
-    #PBS -l ${SysRes} 
-    #PBS ${EmailNotf} 
-    #PBS -N ${JobName}_${njob}
-    pwd -P
-    snakemake -s ${CodeDir}/rm_adpt.smk --configfile ${ConfigFile} --cores $(echo ${SysRes} | cut -d ',' -f 1 | cut -d '=' -f 3) -r -p ${OutFiles1}
-    cat ${SJtabs} > ${DesDir1}/${JobID}.out.tab
-    cp ${ConfigFile} config_${JobID}.yaml
-    echo "sjtab: ${DesDir1}/${JobID}.out.tab" >> config_${JobID}.yaml
-    rm -rf ${DelFiles}
-    snakemake -s ${CodeDir}/stars.smk --configfile config_${JobID}.yaml --cores $(echo ${SysRes} | cut -d ',' -f 1 | cut -d '=' -f 3) -r -p ${OutFiles2}
-    echo "${JobID}" >> JobID_List_Star
-
-EOF
-done
-
-### Job for preparing DegNorm run, depends on Star Jobs
-sleep 3
-DepJobIDStar=`qstat | grep ${JobName} | grep -v 'C' | cut -d '.' -f 1 | paste -s -d ':' -`
-#echo $DepJobIDStar
-SysRes="nodes=1:ppn=40,mem=180gb,walltime=2:00:00"
-JobName="predeg"
-SumLogFile="${WorkDir}/summary_log.csv"
-MapRateFile="${WorkDir}/mapping_rate_sortted"
-qsub << EOF
+        StartLine=`echo "(${njob}-1)*${NumJobsNode}+1" | bc`
+        EndLine=`echo "${njob}*${NumJobsNode}" | bc`
+	SampleGroup=`ls -1 -d ${RawDataDir}/*_1.fq.gz | sort | rev | cut -d '_' -f 2- | cut -d '/' -f 1 | rev | sed -n ${StartLine},${EndLine}p | paste -s -d ',' -`
+        OutFiles1=`ls -1 -d ${RawDataDir}/*_1.fq.gz | sort | rev | cut -d '_' -f 2- | cut -d '/' -f 1 | rev | sed -n ${StartLine},${EndLine}p | sed "s|^|${DesDir1}\/|g" | sed 's|$|\.done|g' | paste -s -d " " -`
+        SJtabs=`ls -1 -d ${RawDataDir}/*_1.fq.gz | sort | rev | cut -d '_' -f 2- | cut -d '/' -f 1 | rev | sed -n ${StartLine},${EndLine}p | sed "s|^|${DesDir1}\/|g" | sed 's|$|_SJ\.out\.tab|g' | paste -s -d " " -`
+        DelFiles=`ls -1 -d ${RawDataDir}/*_1.fq.gz | sort | rev | cut -d '_' -f 2- | cut -d '/' -f 1 | rev | sed -n ${StartLine},${EndLine}p | sed "s|^|${DesDir1}\/|g" | sed 's|$|_\*|g' | paste -s -d " " -`
+        OutFiles2=`ls -1 -d ${RawDataDir}/*_1.fq.gz | sort | rev | cut -d '_' -f 2- | cut -d '/' -f 1 | rev | sed -n ${StartLine},${EndLine}p | sed "s|^|${DesDir2}\/|g" | sed 's|$|\.done|g' | paste -s -d " " -`
+        ls ${OutFiles2} > /dev/null 2>&1
+        ifout=`echo $?`
+        if [ "${ifout}" -eq 0 ]; then
+		echo "This group of samples '${SampleGroup}' are mapped already, skipped."
+                continue
+	else
+		echo "Sample: '${SampleGroup}' will be processed by the pipeline."
+		DelFiles2=`ls -1 -d ${RawDataDir}/*_1.fq.gz | sort | rev | cut -d '_' -f 2- | cut -d '/' -f 1 | rev | sed -n ${StartLine},${EndLine}p | sed "s|^|${DesDir2}\/|g" | sed 's|$|\*|g' | paste -s -d ' ' -`
+		rm -rf $DelFiles2
+        fi
+        qsub << EOF
 #!/bin/bash
 #PBS -V 
 #PBS ${AccInfo} 
 #PBS -d `pwd -P` 
-#PBS -l ${SysRes} 
+#PBS -l ${SysResAdpt} 
 #PBS ${EmailNotf} 
-#PBS -N ${JobName}
-#PBS -W depend=afterok:${DepJobIDStar}
+#PBS -N ${JobNameAdpt}_${njob}
+pwd -P
+ls ${OutFiles1} > /dev/null 2>&1
+ifout=\`echo \$?\`
+echo \$ifout
+if [ "\${ifout}" -gt 0 ]; then
+	rm -rf ${OutFiles1}
+        snakemake -s ${CodeDir}/rm_adpt.smk --configfile ${ConfigFile} --cores $(echo ${SysResAdpt} | cut -d ',' -f 1 | cut -d '=' -f 3) -r -p ${OutFiles1}
+        cat ${SJtabs} > ${DesDir1}/${JobID}.out.tab
+        cp ${ConfigFile} config_${JobID}.yaml
+        echo "sjtab: ${DesDir1}/${JobID}.out.tab" >> config_${JobID}.yaml
+        rm -rf ${DelFiles}
+fi
+snakemake -s ${CodeDir}/stars.smk --configfile config_${JobID}.yaml --cores $(echo ${SysResAdpt} | cut -d ',' -f 1 | cut -d '=' -f 3) -r -p ${OutFiles2}
+#echo "${JobID}" >> JobID_List_Star
+
+EOF
+done
+###
+
+### Job for preparing DegNorm run, depends on Star Jobs
+sleep 3
+SumLogFile="${WorkDir}/summary_log.csv"
+MapRateFile="${WorkDir}/mapping_rate_sortted"
+#DepJobIDStar=`qstat | grep ${JobNameAdpt} | grep -v 'C' | cut -d '.' -f 1 | paste -s -d ':' -`
+if [ -d ${DesDir2} ]; then
+	if [ "$(ls -1 ${DesDir2}/*.done | wc -l)" -eq "${NumSamples}" ]; then
+        	echo "All STAR-2nd jobs are done, no need to submit a dependency-job to process."
+        	## regroup bams
+        	if [ "$(find ${DesDir3} -name *.bam | wc -l)" -gt 0 ]; then
+                	mv $(find ${DesDir3} -name *.bam | paste -s -d ' ' -) ${DesDir2}
+        	fi
+        	find ${DesDir3} -name *.ready2run | xargs rm > /dev/null 2>&1
+		find ${DesDir3} -name *.bai | xargs rm  > /dev/null 2>&1
+        	ls -1 ${DesDir2}/*_Log.final.out | rev | cut -d '/' -f 1 | cut -d '_' -f 2- | rev | paste -s -d ';' | sed 's/^/SampleID;/g' > ${SumLogFile}
+        	paste -d ';' $(ls -1 ${DesDir2}/*_Log.final.out | paste -s -d ' ') | grep '|' | sed 's/|/;/g' | sed 's/ ;\t/;/g' | sed 's/; \+/;/g' | sed 's/^ \+//g' | cut -d ';' -f $(seq 2 2 $(echo $(ls -1 ${DesDir2}/*_Log.final.out | wc -l)*2 | bc) | paste -sd, | sed 's/^/1,/g') >> ${SumLogFile}
+        	head -n 1 ${SumLogFile} | cut -d ';' -f 2- | sed 's/;/\n/g' > snames
+        	grep 'Uniquely mapped reads %' ${SumLogFile} | cut -d ';' -f 2- | sed 's/%//g' | sed 's/;/\n/g' > maprates
+        	paste -d ';' maprates snames | sort -g > ${MapRateFile}
+        	rm snames maprates
+        	NumSamples=`grep -cv '^$' ${MapRateFile}`
+        	NumDegJob=`echo "(${NumSamples}-1)/${NumDegSamp}+1" | bc`
+        	for ((ndeg=1;ndeg<=${NumDegJob};ndeg++))
+        	do
+                	mkdir -p ${DesDir3}/DegNorm_Group_${ndeg}/bams
+                	degbams=`sed -n $(seq ${ndeg} ${NumDegJob} ${NumSamples} | sed 's/$/p/g' | sed 's/^/\-e/g' | paste -s -d ' ' -) ${MapRateFile} | cut -d ';' -f 2 | sed 's/$/_Aligned.sortedByCoord.out.bam/g' | sed "s|^|${DesDir2}/|g" | paste -s -d ' ' -`
+                	mv ${degbams} ${DesDir3}/DegNorm_Group_${ndeg}/bams
+                	touch ${DesDir3}/DegNorm_Group_${ndeg}/DegNorm_Group_${ndeg}.ready2run
+			echo "DegNorm_Group_${ndeg} is ready to go."
+        	done
+        	mkdir -p ${WorkDir}/unmapped_fqs
+        	mv ${DesDir2}/*_unmapped_*.fq.gz ${WorkDir}/unmapped_fqs > /dev/null 2>&1
+	fi
+else
+        echo "STAR-2nd jobs are not completed yet, need to submit this job."
+        DepJobID=`qstat | grep ${JobNameAdpt} | grep -v 'C' | cut -d '.' -f 1 | paste -s -d ':' -`
+        echo $DepJobID
+        qsub << EOF
+#!/bin/bash
+#PBS -V 
+#PBS ${AccInfo} 
+#PBS -d `pwd -P` 
+#PBS -l ${SysResPrd} 
+#PBS ${EmailNotf} 
+#PBS -N ${JobNamePrd}
+#PBS -W depend=afterok:${DepJobID}
+
 mkdir -p ${WorkDir}/unmapped_fqs
-mv ${DesDir2}/*_unmapped_*.fq.gz ${WorkDir}/unmapped_fqs
+mv ${DesDir2}/*_unmapped_*.fq.gz ${WorkDir}/unmapped_fqs > /dev/null 2>&1
+if [ "\$(find ${DesDir3} -name *.bam | wc -l)" -gt 0 ]; then
+        mv \$(find ${DesDir3} -name *.bam | paste -s -d ' ' -) ${DesDir2}
+fi
+find ${DesDir3} -name *.ready2run | xargs rm  > /dev/null 2>&1
+find ${DesDir3} -name *.bai | xargs rm  > /dev/null 2>&1
 ls -1 ${DesDir2}/*_Log.final.out | rev | cut -d '/' -f 1 | cut -d '_' -f 2- | rev | paste -s -d ';' | sed 's/^/SampleID;/g' > ${SumLogFile}
 paste -d ';' \$(ls -1 ${DesDir2}/*_Log.final.out | paste -s -d ' ') | grep '|' | sed 's/|/;/g' | sed 's/ ;\t/;/g' | sed 's/; \+/;/g' | sed 's/^ \+//g' | cut -d ';' -f \$(seq 2 2 \$(echo \$(ls -1 ${DesDir2}/*_Log.final.out | wc -l)*2 | bc) | paste -sd, | sed 's/^/1,/g') >> ${SumLogFile}
 head -n 1 ${SumLogFile} | cut -d ';' -f 2- | sed 's/;/\n/g' > snames
@@ -123,38 +190,46 @@ grep 'Uniquely mapped reads %' ${SumLogFile} | cut -d ';' -f 2- | sed 's/%//g' |
 paste -d ';' maprates snames | sort -g > ${MapRateFile}
 rm snames maprates
 NumSamples=\`grep -cv '^$' ${MapRateFile}\`
-NumDegSamp='4'
-NumDegJob=\`echo "(\${NumSamples}-1)/\${NumDegSamp}+1" | bc\`
+NumDegJob=\`echo "(\${NumSamples}-1)/${NumDegSamp}+1" | bc\`
 for ((ndeg=1;ndeg<=\${NumDegJob};ndeg++))
 do
         mkdir -p ${DesDir3}/DegNorm_Group_\${ndeg}/bams
         degbams=\`sed -n \$(seq \${ndeg} \${NumDegJob} \${NumSamples} | sed 's/$/p/g' | sed 's/^/\-e/g' | paste -s -d ' ' -) ${MapRateFile} | cut -d ';' -f 2 | sed 's/$/_Aligned.sortedByCoord.out.bam/g' | sed "s|^|${DesDir2}/|g" | paste -s -d ' ' -\`
         mv \${degbams} ${DesDir3}/DegNorm_Group_\${ndeg}/bams
+        touch ${DesDir3}/DegNorm_Group_\${ndeg}/DegNorm_Group_\${ndeg}.ready2run
 done
-echo "${JobID}" >> JobID_List_DegNorm
+#echo "${JobID}" >> JobID_List_DegNorm
 #ls -1 -d ${DesDir2}/* | grep -v '.done' | xargs rm -rf
+
 EOF
+fi
+###
 
 ### Submit DegNorm runs, depends on 'predeg'
 sleep 3
-DepJobIDDeg=`qstat | grep ${JobName} | grep -v 'C' | cut -d '.' -f 1 | paste -s -d ':' -`
-SysRes="nodes=2:ppn=40,mem=350gb,walltime=24:00:00"
-nNodes=`echo ${SysRes} | cut -d ':' -f 1 | cut -d '=' -f 2`
+#DepJobIDDeg=`qstat | grep ${JobNamePrd} | grep -v 'C' | cut -d '.' -f 1 | paste -s -d ':' -`
+nNodes=`echo ${SysResDeg} | cut -d ':' -f 1 | cut -d '=' -f 2`
 nThreads='20'
-JobName="degnorm"
-NumDegJob=`ls -1 -d ${DesDir3}/*/ | wc -l | sed 's/^[ \t]*//'`
-for ((njob=1;njob<=${NumDegJob};njob++))
-do
-	DegDir=`echo "${DesDir3}/DegNorm_Group_${njob}"`
-	qsub << EOF
+NumSamples=`ls -1 -d ${RawDataDir}/*_1.fq.gz | grep -vc "^\s*$"`
+NumDegJob=`echo "(${NumSamples}-1)/${NumDegSamp}+1" | bc`
+
+
+if [ -d ${DesDir3} ]; then
+	if [ "$(find ${DesDir3} -name *.ready2run | wc -l)" -gt 0 ]; then
+		echo "DegNorm jobs are ready to submit, no need to wait for 'predeg' job."
+        	find ${DesDir3} -name *.ready2run | while read lines
+        	do
+                	DegDir=`echo $lines | rev | cut -d '/' -f 2- | rev`
+                	GrpNum=`echo $DegDir | rev | cut -d '_' -f 1 | rev`
+	        	qsub << EOF
 #!/bin/bash
 #PBS -V 
 #PBS ${AccInfo} 
 #PBS -d `pwd -P` 
-#PBS -l ${SysRes} 
+#PBS -l ${SysResDeg} 
 #PBS ${EmailNotf} 
-#PBS -N ${JobName}_${njob}
-#PBS -W depend=afterok:${DepJobIDDeg}
+#PBS -N ${JobNameDeg}_${GrpNum}
+
 module purge
 module load shared tools
 module load mpich/3.3.2 samtools/1.11 parallel/20200922
@@ -166,5 +241,43 @@ source \${CONROOT}/etc/profile.d/conda.sh
 conda env list
 conda activate degnorm
 mpiexec -n ${nNodes} degnorm_mpi --bam-dir ${DegDir}/bams -g ${RefGTF} -o ${DegDir}/degnorm_out -p ${nThreads} --nmf-iter 50 -d 20 --minimax-coverage 20 --skip-baseline-selection
+rm $lines
+touch ${DegDir}/DegNorm_Group_${GrpNum}.done
 EOF
-done
+        	done
+	fi
+else
+	echo "'predeg' job has not been executed yet, probably it is queuing."
+        DepJobIDDeg=`qstat | grep ${JobNamePrd} | grep -v 'C' | cut -d '.' -f 1 | paste -s -d ':' -`
+	for ((ndeg=1;ndeg<=${NumDegJob};ndeg++))
+        #find ${DesDir3} -name DegNorm_Group* | while read lines
+        do
+                DegDir="${DesDir3}/DegNorm_Group_${ndeg}"
+		#GrpNum=`echo $lines | rev | cut -d '_' -f 1 | rev`
+                qsub << EOF
+#!/bin/bash
+#PBS -V 
+#PBS ${AccInfo} 
+#PBS -d `pwd -P` 
+#PBS -l ${SysResDeg} 
+#PBS ${EmailNotf} 
+#PBS -N ${JobNameDeg}_${ndeg}
+#PBS -W depend=afterok:${DepJobIDDeg}
+
+module purge
+module load shared tools
+module load mpich/3.3.2 samtools/1.11 parallel/20200922
+mkdir -p ${DegDir}/degnorm_out
+parallel samtools index ::: ${DegDir}/bams/*.bam
+which conda
+CONROOT=\`which conda | rev | cut -d '/' -f 3- | rev\`
+source \${CONROOT}/etc/profile.d/conda.sh
+conda env list
+conda activate degnorm
+mpiexec -n ${nNodes} degnorm_mpi --bam-dir ${DegDir}/bams -g ${RefGTF} -o ${DegDir}/degnorm_out -p ${nThreads} --nmf-iter 50 -d 20 --minimax-coverage 20 --skip-baseline-selection
+rm ${DegDir}/DegNorm_Group_*.ready2run
+touch ${DegDir}/DegNorm_Group_${ndeg}.done
+EOF
+        done
+
+fi

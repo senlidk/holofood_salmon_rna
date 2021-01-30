@@ -22,7 +22,7 @@ rule star_2nd:
 		"""
 		module unload gcc/8.2.0 star/2.7.2b
 		module load gcc/8.2.0 star/2.7.2b pigz/2.3.4
-		STAR --genomeDir {params.StarRef} --readFilesIn {input.read1} {input.read2} --readFilesCommand zcat --outReadsUnmapped Fastx --outFilterMatchNminOverLread {params.StarMinN} --outFilterScoreMinOverLread {params.StarMinS} --twopassMode Basic --sjdbFileChrStartEnd {params.sjtab} --outSAMtype BAM SortedByCoordinate --limitBAMsortRAM 16000000000 --runThreadN {threads} --outFileNamePrefix {params.prefix}_
+		STAR --genomeDir {params.StarRef} --readFilesIn {input.read1} {input.read2} --readFilesCommand zcat --outReadsUnmapped Fastx --outFilterMatchNminOverLread {params.StarMinN} --outFilterScoreMinOverLread {params.StarMinS} --twopassMode Basic --sjdbFileChrStartEnd {params.sjtab} --limitSjdbInsertNsj 2047322 --outSAMtype BAM SortedByCoordinate --limitBAMsortRAM 16000000000 --runThreadN {threads} --outFileNamePrefix {params.prefix}_
 		mv {params.prefix}_Unmapped.out.mate1 {params.prefix}_unmapped_1.fq
 		mv {params.prefix}_Unmapped.out.mate2 {params.prefix}_unmapped_2.fq
 		pigz {params.prefix}_unmapped_1.fq
